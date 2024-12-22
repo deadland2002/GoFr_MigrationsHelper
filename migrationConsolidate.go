@@ -22,6 +22,7 @@ func main() {
 	}
 
 	var queries []string
+	var queriedFiles []string
 
 	for _, file := range files {
 		if file.IsDir() || file.Name() == "all.go" {
@@ -29,6 +30,7 @@ func main() {
 		}
 
 		filePath := filepath.Join(migrationsDir, file.Name())
+
 		content, err := ioutil.ReadFile(filePath)
 		if err != nil {
 			log.Fatal(err)
@@ -36,6 +38,7 @@ func main() {
 
 		query := extractQuery(string(content))
 		if query != "" {
+			queriedFiles = append(queriedFiles, filePath)
 			queries = append(queries, query)
 		}
 	}
@@ -54,14 +57,33 @@ func main() {
 	}
 
 	fmt.Println("Consolidated migration file created successfully:", consolidatedFileName)
+
+	for _, filePath := range queriedFiles {
+		err = os.Remove(filePath)
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("Deleted file:", filePath)
+	}
 }
 
 func extractQuery(content string) string {
-	re := regexp.MustCompile(`const query = "(.*?)"`)
+	// Match string inside double quotes
+	re := regexp.MustCompile(`const (?:query|consolidatedQuery\d+) = "(.*?)"`)
 	matches := re.FindStringSubmatch(content)
 	if len(matches) > 1 {
 		return matches[1]
 	}
+
+	// Match string inside backticks (multi-line and single-line)
+	re = regexp.MustCompile(`const (?:query|consolidatedQuery\d+) = ` + "`" + `([\s\S]*?)` + "`")
+	matches = re.FindStringSubmatch(content)
+
+	fmt.Println("Matches: ", matches)
+	if len(matches) > 1 {
+		return matches[1]
+	}
+
 	return ""
 }
 
@@ -85,35 +107,35 @@ import "fmt"
 import "gofr.dev/pkg/gofr/migration"
 
 func %s() migration.Migrate {
-	return migration.Migrate{
-		UP: %s,
-	}
+ return migration.Migrate{
+  UP: %s,
+ }
 }
 
-const consolidatedQuery = %s
+const consolidatedQuery%s = %s
 
 func %s(d migration.Datasource) error {
-	const query = consolidatedQuery
-	_, err := d.SQL.Exec(query)
-	if err != nil {
-		fmt.Println(err)
-		return err
-	}
-	return nil
+ const query = consolidatedQuery%s
+ _, err := d.SQL.Exec(query)
+ if err != nil {
+  fmt.Println(err)
+  return err
+ }
+ return nil
 }
-`, functionName, functionQueryName, consolidatedQuery, functionQueryName)
+`, functionName, functionQueryName, migrationTimestamp, consolidatedQuery, functionQueryName, migrationTimestamp)
 }
 
 var fileTemplateAll = `
 package migrations
 
 import (
-	"gofr.dev/pkg/gofr/migration"
+ "gofr.dev/pkg/gofr/migration"
 )
 
 func All() map[int64]migration.Migrate {
-	return map[int64]migration.Migrate{
-	}
+ return map[int64]migration.Migrate{
+ }
 }
 `
 
@@ -137,22 +159,26 @@ func updateAllMigrationsFile(functionName string, migrationTimeStamp string) err
 		return err
 	}
 
+	// Remove lines that match the unwanted format
+	re := regexp.MustCompile(`\d+: \w+\(\),\n`)
+	cleanedContent := re.ReplaceAllString(string(content), "")
+
 	// Prepare the new migration entry
 	newMigrationEntry := fmt.Sprintf("\t\t%s: %s(),\n", migrationTimeStamp, functionName)
 
 	// Find the position to insert the new migration entry
-	lastIndex := strings.LastIndex(string(content), "}")
+	lastIndex := strings.LastIndex(cleanedContent, "}")
 	if lastIndex == -1 {
 		return fmt.Errorf("Failed to find closing bracket in all.go file")
 	}
 
-	secondLastIndex := strings.LastIndex(string(content[:lastIndex]), "}")
+	secondLastIndex := strings.LastIndex(cleanedContent[:lastIndex], "}")
 	if secondLastIndex == -1 {
 		return fmt.Errorf("Failed to find second-to-last closing bracket in all.go file")
 	}
 
 	// Insert the new migration entry
-	newContent := strings.Trim(string(content[:secondLastIndex]), "\t") + newMigrationEntry + "\t" + string(content[secondLastIndex:])
+	newContent := strings.Trim(cleanedContent[:secondLastIndex], "\t") + newMigrationEntry + "\t" + cleanedContent[secondLastIndex:]
 
 	// Write the updated content back to the file
 	err = os.WriteFile(allMigrationsFilePath, []byte(newContent), 0644)

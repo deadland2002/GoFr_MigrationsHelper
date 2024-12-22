@@ -60,7 +60,10 @@ func formatNameForQueryFunction(name string) string {
 var fileTemplate = `
 package migrations
 
-import "gofr.dev/pkg/gofr/migration"
+import (
+	"fmt"
+	"gofr.dev/pkg/gofr/migration"
+)
 
 func %s() migration.Migrate {
 	return migration.Migrate{
